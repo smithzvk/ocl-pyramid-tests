@@ -31,6 +31,35 @@ upscale(int scaleFactor,
    /* dstImg[yout * scaleFactor * imgWidth + xout] = dstImg[yout/scaleFactor * imgWidth + xout/scaleFactor]; */
 }
 
+__kernel
+void
+filter(__global const float *srcImg,
+        int imgWidth,
+        int imgHeight,
+        __global const float *filter,
+        int filterSize,
+        __global float *dstImg)
+{
+   int xout = get_global_id(0);
+   int yout = get_global_id(1);
+
+   float sum = 0.0f;
+   for (int i = 0, yoff = -filterSize/2; i < filterSize; i++, yoff++)
+   {
+      int ysrc = max((int) 0, min(imgHeight, yout + yoff));
+      int filterRow = filterSize * i;
+      int imgRow = imgWidth * ysrc;
+      for (int j = 0, xoff = -filterSize/2; j < filterSize; j++, xoff++)
+      {
+         int xsrc = max((int) 0, min(imgWidth, xout + xoff));
+
+         sum += filter[filterRow + j] * srcImg[imgRow + xsrc];
+      }
+   }
+
+   dstImg[yout * imgWidth + xout] = sum;
+}
+
 /* __kernel void sum( */
 /*     __global const float *a, */
 /*     __global const float *b, */

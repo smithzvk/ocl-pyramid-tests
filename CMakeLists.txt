@@ -17,3 +17,7 @@ find_package(OpenCV REQUIRED)
 add_executable (pyramids pyramids.c cl-helper.c)
 target_include_directories (pyramids PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries (pyramids ${OpenCL_LIBRARY} ${OpenCV_LIBS})
+
+add_executable (effects effects.c cl-helper.c)
+target_include_directories (effects PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries (effects ${OpenCL_LIBRARY} ${OpenCV_LIBS})
