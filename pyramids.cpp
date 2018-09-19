@@ -2,19 +2,19 @@
 #include <cv.h>
 #include <highgui.h>
 
-void applyKernel(cl_command_queue queue, cl_kernel knl,
-                 cl_mem d_img, int width, int height,
-                 float *filter, cl_mem d_filter, int filterSize,
-                 cl_mem d_out, float *out, CvMat **cvOut)
+void enlarge(cl_command_queue queue, cl_kernel knl,
+             int scaleFactor, cl_mem d_img, int width, int height,
+             float *filter, cl_mem d_filter, int filterSize,
+             cl_mem d_out, float *out, CvMat **cvOut)
 {
    CALL_CL_GUARDED(clEnqueueWriteBuffer, (
                       queue, d_filter, /*blocking*/ CL_TRUE, /*offset*/ 0,
                       filterSize * filterSize * sizeof(float), filter,
                       0, NULL, NULL));
 
-   SET_6_KERNEL_ARGS(knl, d_img, width, height, d_filter, filterSize, d_out);
+   SET_7_KERNEL_ARGS(knl, scaleFactor, d_img, width, height, d_filter, filterSize, d_out);
    size_t ldim[] = {1, 1};
-   size_t gdim[] = {width, height};
+   size_t gdim[] = {width * scaleFactor, height * scaleFactor};
    CALL_CL_GUARDED(clEnqueueNDRangeKernel,
                    (queue, knl,
                     /*dimensions*/ 2, NULL, gdim, ldim,
@@ -25,14 +25,14 @@ void applyKernel(cl_command_queue queue, cl_kernel knl,
    // --------------------------------------------------------------------------
    CALL_CL_GUARDED(clEnqueueReadBuffer, (
                       queue, d_out, /*blocking*/ CL_TRUE, /*offset*/ 0,
-                      width * height * sizeof(float), out,
+                      width * scaleFactor * height * scaleFactor * sizeof(float), out,
                       0, NULL, NULL));
 
-   *cvOut = cvCreateMat(height, width, CV_32FC1);
+   *cvOut = cvCreateMat(height * scaleFactor, width * scaleFactor, CV_32FC1);
 
-   for (int y = 0; y < height; y++)
-      for (int x = 0; x < width; x++)
-         cvSetReal2D(*cvOut, y, x, out[y*width + x]);
+   for (int y = 0; y < height*scaleFactor; y++)
+      for (int x = 0; x < width*scaleFactor; x++)
+         cvSetReal2D(*cvOut, y, x, out[y*width*scaleFactor + x]);
 }
 
 int main(int argc, char **argv)
@@ -40,14 +40,14 @@ int main(int argc, char **argv)
    cl_context ctx;
    cl_command_queue queue;
    /* create_context_on(CHOOSE_INTERACTIVELY, CHOOSE_INTERACTIVELY, 0, &ctx, &queue, 0); */
-   create_context_on("NVIDIA", NULL, 0, &ctx, &queue, 0);
+   create_context_on("pocl", NULL, 0, &ctx, &queue, 0);
 
    print_device_info_from_queue(queue);
 
    // --------------------------------------------------------------------------
    // load kernels
    // --------------------------------------------------------------------------
-   cl_kernel knl = kernel_from_string(ctx, read_file("../kernels.cl"), "filter", NULL);
+   cl_kernel knl = kernel_from_string(ctx, read_file("../kernels.cl"), "upscale", NULL);
 
    // --------------------------------------------------------------------------
    // allocate and initialize memory
@@ -62,7 +62,14 @@ int main(int argc, char **argv)
    cvConvertScale(graycar8, graycar, 1.0/255, 0);
 
    cvNamedWindow("Output", CV_WINDOW_AUTOSIZE);
-   cvNamedWindow("Original", CV_WINDOW_AUTOSIZE);
+   cvShowImage("Output", graycar);
+   cvWaitKey(0);
+
+   int scaleFactor = 2;
+
+   CvMat *enlarged = cvCreateMat(height * scaleFactor, width * scaleFactor, CV_32FC1);
+   cvPyrUp(graycar, enlarged, CV_GAUSSIAN_5x5);
+
 
    float *img = (float *) malloc(sizeof(float) * width * height);
    cl_mem d_img = clCreateBuffer(ctx, CL_MEM_READ_WRITE,
@@ -81,9 +88,9 @@ int main(int argc, char **argv)
                                        sizeof(float) * 5 * 5, 0, &status);
    CHECK_CL_ERROR(status, "clCreateBuffer: d_filter");
 
-   float *imgOut = (float *) malloc(sizeof(float) * width * height);
+   float *imgOut = (float *) malloc(sizeof(float) * width * scaleFactor * height * scaleFactor);
    cl_mem d_imgOut = clCreateBuffer(ctx, CL_MEM_READ_WRITE,
-                                    sizeof(float) * width * height,
+                                    sizeof(float) * width * scaleFactor * height * scaleFactor,
                                     0, &status);
    CHECK_CL_ERROR(status, "clCreateBuffer: d_imgOut");
 
@@ -107,27 +114,23 @@ int main(int argc, char **argv)
    // run code on device
    // --------------------------------------------------------------------------
 
-   int nMethods = 0;
+   CvMat *enlarged3x3Box;
 
-   CvMat *blur3x3Box;
-   nMethods++;
    {
       float filter[] = {v, v, v,
                         v, v, v,
                         v, v, v};
-      applyKernel(queue, knl, d_img, width, height, filter, d_filter3x3, 3, d_imgOut, imgOut, &blur3x3Box);
+      enlarge(queue, knl, scaleFactor, d_img, width, height, filter, d_filter3x3, 3, d_imgOut, imgOut, &enlarged3x3Box);
    }
    // This is the same as bilinear
-   CvMat * blur3x3Gaussian;
-   nMethods++;
+   CvMat * enlarged3x3Gaussian;
    {
       float filter[] = {1.0/16, 1.0/8, 1.0/16,
                         1.0/8,  1.0/4, 1.0/8,
                         1.0/16, 1.0/8, 1.0/16};
-      applyKernel(queue, knl, d_img, width, height, filter, d_filter3x3, 3, d_imgOut, imgOut, &blur3x3Gaussian);
+      enlarge(queue, knl, scaleFactor, d_img, width, height, filter, d_filter3x3, 3, d_imgOut, imgOut, &enlarged3x3Gaussian);
    }
-   CvMat * blur5x5Gaussian;
-   nMethods++;
+   CvMat * enlarged5x5Gaussian;
    {
       float filter[] = {1,  4,  6,  4, 1,
                         4, 16, 24, 16, 4,
@@ -136,94 +139,36 @@ int main(int argc, char **argv)
                         1,  4,  6,  4, 1};
       for (int i = 0; i < 5*5; i++)
          filter[i] /= 256.0;
-      applyKernel(queue, knl, d_img, width, height, filter, d_filter5x5, 5, d_imgOut, imgOut, &blur5x5Gaussian);
+      enlarge(queue, knl, scaleFactor, d_img, width, height, filter, d_filter5x5, 5, d_imgOut, imgOut, &enlarged5x5Gaussian);
    }
-   CvMat *sharpen3x3;
-   nMethods++;
-   {
-      float filter[] = {0, -1, 0,
-                        -1, 5, -1,
-                        0, -1, 0};
-      applyKernel(queue, knl, d_img, width, height, filter, d_filter3x3, 3, d_imgOut, imgOut, &sharpen3x3);
-   }
-   CvMat *edge3x3;
-   nMethods++;
-   {
-      float filter[] = {0,  1, 0,
-                        1, -4, 1,
-                        0,  1, 0};
-      applyKernel(queue, knl, d_img, width, height, filter, d_filter3x3, 3, d_imgOut, imgOut, &edge3x3);
-   }
-   CvMat *cornerEdge3x3;
-   nMethods++;
-   {
-      float filter[] = {-1, -1, -1,
-                        -1,  8, -1,
-                        -1, -1, -1};
-      applyKernel(queue, knl, d_img, width, height, filter, d_filter3x3, 3, d_imgOut, imgOut, &cornerEdge3x3);
-   }
-   CvMat *edgePlusOrig3x3;
-   nMethods++;
-   {
-      float filter[] = {-1, -1, -1,
-                        -1,  9, -1,
-                        -1, -1, -1};
-      applyKernel(queue, knl, d_img, width, height, filter, d_filter3x3, 3, d_imgOut, imgOut, &edgePlusOrig3x3);
-   }
-   CvMat *unsharpMasking5x5;
-   nMethods++;
-   {
-      float filter[] = {1,  4,    6,  4, 1,
-                        4, 16,   24, 16, 4,
-                        6, 24, -476, 24, 6,
-                        4, 16,   24, 16, 4,
-                        1,  4,    6,  4, 1};
-      for (int i = 0; i < 5*5; i++)
-         filter[i] /= -256.0;
+   /* CvMat * enlargedLinear; */
+   /* { */
+   /*    float filter[] = {1, 2, 1, */
+   /*                      2, 4, 2, */
+   /*                      1, 2, 1}; */
+   /*    for (int i = 0; i < 3*3; i++) */
+   /*       filter[i] /= 16; */
 
-      applyKernel(queue, knl, d_img, width, height, filter, d_filter5x5, 5, d_imgOut, imgOut, &unsharpMasking5x5);
-   }
+   /*    enlarge(queue, knl, scaleFactor, d_img, width, height, filter, d_filter4x4, 4, d_imgOut, imgOut, &enlargedMagic); */
+   /* } */
+   /* CvMat * enlargedMagic; */
+   /* { */
+   /*    float filter1d[] = {1.0/8, 3.0/8, 3.0/8, 1.0/8}; */
+   /*    float filter[16]; */
+   /*    for (int i = 0; i < 4; i++) */
+   /*       for (int j = 0; j < 4; j++) */
+   /*          filter[i*2 + j] = filter1d[i] * filter1d[j]; */
 
-   /* Display the original for comparison */
+   /*    enlarge(queue, knl, scaleFactor, d_img, width, height, filter, d_filter4x4, 4, d_imgOut, imgOut, &enlargedMagic); */
+   /* } */
 
-   int scale = 4;
-   {
-      CvMat *zoom = cvCreateMat(height*scale, width*scale, CV_32FC1);
-      for (size_t i = 0; i < width * height * scale * scale; i++)
-      {
-         int row = i/(width*scale);
-         int col = i%(width*scale);
-         int orow = row/scale;
-         int ocol = col/scale;
-         cvSetReal2D(zoom, row, col, cvGetReal2D(graycar, orow, ocol));
-      }
-
-      cvShowImage("Original", zoom);
-   }
-
-   CvMat *methods[] = {blur3x3Box,
-                       blur3x3Gaussian,
-                       blur5x5Gaussian,
-                       sharpen3x3,
-                       unsharpMasking5x5,
-                       edgePlusOrig3x3,
-                       edge3x3,
-                       cornerEdge3x3};
-
+   int nMethods = 4;
+   CvMat *methods[] = {enlarged, enlarged3x3Box, enlarged3x3Gaussian, enlarged5x5Gaussian};
    for (int i = 0; ; i = (i+1) % nMethods)
    {
       CvMat *method = methods[i];
-      CvMat *zoom = cvCreateMat(height*scale, width*scale, CV_32FC1);
-      for (size_t i = 0; i < width * height * scale * scale; i++)
-      {
-         int row = i/(width*scale);
-         int col = i%(width*scale);
-         int orow = row/scale;
-         int ocol = col/scale;
-         cvSetReal2D(zoom, row, col, cvGetReal2D(method, orow, ocol));
-      }
 
-      cvShowImage("Output", zoom);
+      cvShowImage("Output", method);
 
       int key = cvWaitKey(0);
       printf("%i\n", key);

@@ -36,6 +36,10 @@
 #include <CL/cl.h>
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* An error check macro for OpenCL.
  *
  * Usage:
@@ -247,4 +251,8 @@ void print_device_info_from_queue(cl_command_queue queue);
   CALL_CL_GUARDED(clSetKernelArg, (knl, 10, sizeof(arg10), &arg10)); \
   CALL_CL_GUARDED(clSetKernelArg, (knl, 11, sizeof(arg11), &arg11));
 
+#endif
+
+#ifdef __cplusplus
+}
 #endif
